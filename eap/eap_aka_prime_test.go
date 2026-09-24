@@ -810,6 +810,14 @@ func TestEapAkaPrimeUnmarshalInvalidAttr(t *testing.T) {
 			errContains: "exceeds attribute length",
 		},
 		{
+			name: "Duplicate AT_MAC",
+			attr: append(
+				append([]byte{0x0b, 0x05, 0x00, 0x00}, make([]byte, 16)...),
+				append([]byte{0x0b, 0x05, 0x00, 0x00}, make([]byte, 16)...)...,
+			),
+			errContains: "duplicate AT_MAC",
+		},
+		{
 			name:        "Truncated attribute header",
 			attr:        []byte{0x18},
 			errContains: "incomplete attribute header",

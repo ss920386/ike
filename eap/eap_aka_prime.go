@@ -311,6 +311,11 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 		attr.value = body[:valLen]
 
 		if attr.attrType == AT_MAC {
+			// RFC 4187 section 8.1: an attribute must not appear more than once
+			// unless otherwise specified, and AT_MAC is not an exception
+			if macOffset >= 0 {
+				return errors.New("EAP-AKA' Unmarshal(): duplicate AT_MAC attribute")
+			}
 			macOffset = attrStart + headerLen
 		}
 
