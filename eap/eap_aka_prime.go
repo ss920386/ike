@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"sort"
 
@@ -91,7 +92,7 @@ type EapAkaPrime struct {
 	// raw holds the bytes given to Unmarshal, so Marshal can reproduce the
 	// received message exactly (required for AT_MAC verification) even when
 	// it has duplicate or unrecognized attributes that the map cannot keep.
-	// It is dropped once an attribute other than AT_MAC is set.
+	// It is dropped once any attribute is set.
 	raw          []byte
 	rawMACOffset int // offset of the AT_MAC value in raw, -1 if absent
 }
@@ -119,13 +120,8 @@ func (eapAkaPrime *EapAkaPrime) SetAttr(attrType EapAkaPrimeAttrType, value []by
 		return errors.Wrapf(err, "EAP-AKA' SetAttr failed")
 	}
 
-	if eapAkaPrime.raw != nil {
-		if attr.attrType == AT_MAC && eapAkaPrime.rawMACOffset >= 0 {
-			copy(eapAkaPrime.raw[eapAkaPrime.rawMACOffset:], attr.value)
-		} else {
-			eapAkaPrime.raw = nil
-		}
-	}
+	// The message is modified, so it can no longer be reproduced from raw
+	eapAkaPrime.raw = nil
 
 	if _, exists := eapAkaPrime.attributes[attr.attrType]; !exists && eapAkaPrime.attributeOrder != nil {
 		eapAkaPrime.attributeOrder = append(eapAkaPrime.attributeOrder, attr.attrType)
@@ -539,6 +535,22 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 func (eapAkaPrime *EapAkaPrime) initMAC() error {
 	zeros := make([]byte, 16)
 	return eapAkaPrime.SetAttr(AT_MAC, zeros)
+}
+
+// withZeroMAC returns a copy of the message with the AT_MAC value zeroed (added
+// if absent), as required for AT_MAC calculation. eapAkaPrime is not modified.
+func (eapAkaPrime *EapAkaPrime) withZeroMAC() (*EapAkaPrime, error) {
+	c := *eapAkaPrime
+	c.attributes = maps.Clone(eapAkaPrime.attributes)
+	if c.raw != nil && c.rawMACOffset >= 0 {
+		c.raw = bytes.Clone(c.raw)
+		clear(c.raw[c.rawMACOffset : c.rawMACOffset+16])
+		return &c, nil
+	}
+	if err := c.initMAC(); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (eapAkaPrime *EapAkaPrime) getAttrsKeys() []EapAkaPrimeAttrType {

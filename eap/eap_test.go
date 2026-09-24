@@ -440,3 +440,50 @@ func TestEapAkaMacRawAttributes(t *testing.T) {
 		})
 	}
 }
+
+func TestEapAkaMacKeepsReceivedMac(t *testing.T) {
+	packet, err := hex.DecodeString(
+		"02ab002c32010000" +
+			"03030040c4532b691a62a48c" +
+			"86010000" +
+			"0b050000d5300e0989ee0bbd17d642b1f4abeeb6",
+	)
+	require.NoError(t, err)
+	key, err := hex.DecodeString("36ba2ad66f240be3fc8e793f91d5d39953c07c45232b65b8e2f6cc5c06d3b9d0")
+	require.NoError(t, err)
+
+	var eap eap_message.EAP
+	require.NoError(t, eap.Unmarshal(packet))
+	_, err = eap.CalcEapAkaPrimeAtMAC(key)
+	require.NoError(t, err)
+
+	// CalcEapAkaPrimeAtMAC must not zero the received AT_MAC
+	attr, err := eap.EapTypeData.(*eap_message.EapAkaPrime).GetAttr(eap_message.AT_MAC)
+	require.NoError(t, err)
+	require.Equal(t, "d5300e0989ee0bbd17d642b1f4abeeb6", hex.EncodeToString(attr.GetValue()))
+	out, err := eap.Marshal()
+	require.NoError(t, err)
+	require.Equal(t, packet, out)
+}
+
+func TestEapAkaMacConstructedMessage(t *testing.T) {
+	// A constructed message without AT_MAC: the MAC is calculated as if a
+	// zeroed AT_MAC were present, and the message itself is left unchanged.
+	key := bytes.Repeat([]byte{0x33}, 32)
+	akaPrime := eap_message.NewEapAkaPrime(eap_message.SubtypeAkaChallenge)
+	require.NoError(t, akaPrime.SetAttr(eap_message.AT_RES, []byte{1, 2, 3, 4}))
+	eap := eap_message.EAP{Code: eap_message.EapCodeResponse, Identifier: 7, EapTypeData: akaPrime}
+
+	mac, err := eap.CalcEapAkaPrimeAtMAC(key)
+	require.NoError(t, err)
+
+	_, err = akaPrime.GetAttr(eap_message.AT_MAC)
+	require.Error(t, err)
+
+	require.NoError(t, akaPrime.SetAttr(eap_message.AT_MAC, make([]byte, 16)))
+	zeroed, err := eap.Marshal()
+	require.NoError(t, err)
+	h := hmac.New(sha256.New, key)
+	h.Write(zeroed)
+	require.Equal(t, h.Sum(nil)[:16], mac)
+}

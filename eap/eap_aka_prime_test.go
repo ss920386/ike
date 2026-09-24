@@ -895,15 +895,18 @@ func TestEapAkaPrimeSetAttrAfterUnmarshal(t *testing.T) {
 	}
 	mac := bytes.Repeat([]byte{0xaa}, 16)
 
-	t.Run("AT_MAC updates raw bytes in place", func(t *testing.T) {
+	t.Run("AT_MAC falls back to re-marshal", func(t *testing.T) {
 		var m EapAkaPrime
 		require.NoError(t, m.Unmarshal(raw))
 		require.NoError(t, m.SetAttr(AT_MAC, mac))
 
 		out, err := m.Marshal()
 		require.NoError(t, err)
-		expected := append(append([]byte{}, raw[:16]...), mac...)
-		require.Equal(t, expected, out)
+		require.Equal(t, append([]byte{
+			byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+			0x18, 0x01, 0x00, 0x01,
+			0x0b, 0x05, 0x00, 0x00,
+		}, mac...), out)
 		// The caller's buffer must not be modified
 		require.Equal(t, make([]byte, 16), raw[16:])
 	})
