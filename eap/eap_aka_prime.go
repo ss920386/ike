@@ -595,8 +595,14 @@ func (attr *EapAkaPrimeAttr) setAttr(attrType EapAkaPrimeAttrType, value []byte)
 		totalLen := EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen + valBytesLen
 		paddingBytes := (4 - (totalLen % 4)) % 4
 
+		// The 1-byte Length field caps the attribute at 255*4 bytes, which also
+		// keeps valBytesLen within uint16.
+		calcTotalLen := (totalLen + paddingBytes) / 4
+		if calcTotalLen > math.MaxUint8 {
+			return errors.Errorf("%s network name too long: %d bytes", attrType, valBytesLen)
+		}
 		attr.reserved = uint16(valBytesLen) // The unit of reserved is byte
-		attr.length = uint8((totalLen + paddingBytes) / 4)
+		attr.length = uint8(calcTotalLen)
 
 		attr.value = make([]byte, valBytesLen+paddingBytes)
 		copy(attr.value, value)

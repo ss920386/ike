@@ -141,6 +141,18 @@ func TestEapAkaPrimeSetGetAttr(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name:      "Set AT_KDF_INPUT max length",
+			attrType:  AT_KDF_INPUT,
+			value:     make([]byte, 1016), // 255*4 - 4 header bytes
+			expectErr: false,
+		},
+		{
+			name:      "Set AT_KDF_INPUT too long",
+			attrType:  AT_KDF_INPUT,
+			value:     make([]byte, 1017),
+			expectErr: true,
+		},
+		{
 			name:      "Set AT_CHECKCODE empty",
 			attrType:  AT_CHECKCODE,
 			value:     []byte{},
@@ -298,6 +310,13 @@ func TestEapAkaPrimeAttrLength(t *testing.T) {
 			value:            []byte("test.free5gc.org"),
 			expectedLen:      5,
 			expectedReserved: uint16(len("test.free5gc.org")),
+		},
+		{
+			name:             "AT_KDF_INPUT max length",
+			attrType:         AT_KDF_INPUT,
+			value:            make([]byte, 1016),
+			expectedLen:      255,
+			expectedReserved: 1016,
 		},
 	}
 
