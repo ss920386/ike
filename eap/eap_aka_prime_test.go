@@ -810,6 +810,11 @@ func TestEapAkaPrimeUnmarshalInvalidAttr(t *testing.T) {
 			errContains: "exceeds attribute length",
 		},
 		{
+			name:        "Truncated attribute header",
+			attr:        []byte{0x18},
+			errContains: "incomplete attribute header",
+		},
+		{
 			name:        "Unknown attribute truncated",
 			attr:        []byte{0x87, 0x02, 0x00, 0x00, 0x01},
 			errContains: "value length mismatch",
@@ -902,11 +907,13 @@ func TestEapAkaPrimeSetAttrAfterUnmarshal(t *testing.T) {
 
 		out, err := m.Marshal()
 		require.NoError(t, err)
-		require.Equal(t, append([]byte{
+		// Re-marshaled in attribute type order; only the last AT_KDF is kept
+		expected := append([]byte{
 			byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
-			0x18, 0x01, 0x00, 0x01,
 			0x0b, 0x05, 0x00, 0x00,
-		}, mac...), out)
+		}, mac...)
+		expected = append(expected, 0x18, 0x01, 0x00, 0x01)
+		require.Equal(t, expected, out)
 		// The caller's buffer must not be modified
 		require.Equal(t, make([]byte, 16), raw[16:])
 	})
@@ -920,9 +927,9 @@ func TestEapAkaPrimeSetAttrAfterUnmarshal(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []byte{
 			byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
-			0x18, 0x01, 0x00, 0x03,
 			0x0b, 0x05, 0x00, 0x00,
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0x18, 0x01, 0x00, 0x03,
 		}, out)
 	})
 }
