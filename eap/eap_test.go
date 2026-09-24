@@ -389,3 +389,54 @@ func TestEapAkaMacKdfInputPadding(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, h.Sum(nil)[:16], mac)
 }
+
+func TestEapAkaMacRawAttributes(t *testing.T) {
+	// Messages that cannot be reproduced from the attribute map: the MAC must
+	// be computed over the received bytes with the AT_MAC value zeroed.
+	key := bytes.Repeat([]byte{0x22}, 32)
+	testCases := []struct {
+		name   string
+		length byte // EAP length: 8 header bytes + attrs + 20 bytes AT_MAC
+		attrs  []byte
+	}{
+		{
+			name:   "Multiple AT_KDF",
+			length: 36,
+			attrs: []byte{
+				0x18, 0x01, 0x00, 0x02,
+				0x18, 0x01, 0x00, 0x01,
+			},
+		},
+		{
+			name:   "Unknown skippable AT_RESULT_IND",
+			length: 32,
+			attrs:  []byte{0x87, 0x01, 0x00, 0x00},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			packet := []byte{
+				byte(eap_message.EapCodeRequest), 1, 0, tc.length,
+				byte(eap_message.EapTypeAkaPrime), byte(eap_message.SubtypeAkaChallenge), 0, 0,
+			}
+			packet = append(packet, tc.attrs...)
+			packet = append(packet, 0x0b, 0x05, 0x00, 0x00)
+			packet = append(packet, make([]byte, 16)...)
+
+			h := hmac.New(sha256.New, key)
+			h.Write(packet)
+
+			// Put a non-zero MAC on the wire; it must be zeroed for the calculation
+			received := append([]byte{}, packet...)
+			copy(received[len(received)-16:], bytes.Repeat([]byte{0xff}, 16))
+
+			var eap eap_message.EAP
+			require.NoError(t, eap.Unmarshal(received))
+
+			mac, err := eap.CalcEapAkaPrimeAtMAC(key)
+			require.NoError(t, err)
+			require.Equal(t, h.Sum(nil)[:16], mac)
+		})
+	}
+}

@@ -739,3 +739,187 @@ func TestEapAkaPrimePaddingRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestEapAkaPrimeSetAttrValueExcludesPadding(t *testing.T) {
+	testCases := []struct {
+		name     string
+		attrType EapAkaPrimeAttrType
+		value    []byte
+		expected []byte
+	}{
+		{
+			name:     "AT_KDF_INPUT 11-byte name",
+			attrType: AT_KDF_INPUT,
+			value:    []byte("free5gc.org"),
+			expected: []byte{0x17, 0x04, 0x00, 0x0b, 'f', 'r', 'e', 'e', '5', 'g', 'c', '.', 'o', 'r', 'g', 0x00},
+		},
+		{
+			name:     "AT_RES 40 bits",
+			attrType: AT_RES,
+			value:    []byte{0x01, 0x02, 0x03, 0x04, 0x05},
+			expected: []byte{0x03, 0x03, 0x00, 0x28, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewEapAkaPrime(SubtypeAkaChallenge)
+			require.NoError(t, m.SetAttr(tc.attrType, tc.value))
+
+			attr, err := m.GetAttr(tc.attrType)
+			require.NoError(t, err)
+			require.Equal(t, tc.value, attr.GetValue())
+
+			out, err := m.Marshal()
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, out[4:])
+		})
+	}
+}
+
+func TestEapAkaPrimeUnmarshalInvalidAttr(t *testing.T) {
+	header := []byte{byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00}
+	testCases := []struct {
+		name        string
+		attr        []byte
+		errContains string
+	}{
+		{
+			name:        "AT_CHECKCODE length 0",
+			attr:        []byte{0x86, 0x00, 0x00, 0x00},
+			errContains: "exceeds attribute length",
+		},
+		{
+			name:        "AT_CHECKCODE length 64 truncated",
+			attr:        append([]byte{0x86, 0x40, 0x00, 0x00}, make([]byte, 20)...),
+			errContains: "value length mismatch",
+		},
+		{
+			name:        "AT_RES shorter than 32 bits",
+			attr:        []byte{0x03, 0x02, 0x00, 0x18, 0x01, 0x02, 0x03, 0x00},
+			errContains: "between 32 and 128 bits",
+		},
+		{
+			name:        "AT_RES longer than 128 bits",
+			attr:        append([]byte{0x03, 0x06, 0x00, 0x88}, make([]byte, 20)...),
+			errContains: "between 32 and 128 bits",
+		},
+		{
+			name:        "Unknown attribute length 0",
+			attr:        []byte{0x87, 0x00, 0x00, 0x00},
+			errContains: "exceeds attribute length",
+		},
+		{
+			name:        "Unknown attribute truncated",
+			attr:        []byte{0x87, 0x02, 0x00, 0x00, 0x01},
+			errContains: "value length mismatch",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := append(append([]byte{}, header...), tc.attr...)
+			var m EapAkaPrime
+			require.ErrorContains(t, m.Unmarshal(raw), tc.errContains)
+		})
+	}
+}
+
+func TestEapAkaPrimeUnmarshalResNonByteAlignedBits(t *testing.T) {
+	// 36-bit RES occupies 5 bytes (last 4 bits are zero padding)
+	raw := []byte{
+		byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+		0x03, 0x03, 0x00, 0x24, 0x01, 0x02, 0x03, 0x04, 0x50, 0x00, 0x00, 0x00,
+	}
+	var m EapAkaPrime
+	require.NoError(t, m.Unmarshal(raw))
+	attr, err := m.GetAttr(AT_RES)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x01, 0x02, 0x03, 0x04, 0x50}, attr.GetValue())
+}
+
+func TestEapAkaPrimeRawRoundTrip(t *testing.T) {
+	testCases := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "Multiple AT_KDF",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x18, 0x01, 0x00, 0x02,
+				0x18, 0x01, 0x00, 0x01,
+			},
+		},
+		{
+			name: "Unknown skippable AT_RESULT_IND",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x87, 0x01, 0x00, 0x00,
+				0x18, 0x01, 0x00, 0x01,
+			},
+		},
+		{
+			name: "Unknown attribute with value",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x0e, 0x03, 0x00, 0x05, 'a', 'l', 'i', 'c', 'e', 0x00, 0x00, 0x00, // AT_IDENTITY
+				0x18, 0x01, 0x00, 0x01,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m EapAkaPrime
+			require.NoError(t, m.Unmarshal(tc.raw))
+
+			attr, err := m.GetAttr(AT_KDF)
+			require.NoError(t, err)
+			require.Equal(t, []byte{0x00, 0x01}, attr.GetValue())
+
+			out, err := m.Marshal()
+			require.NoError(t, err)
+			require.Equal(t, tc.raw, out)
+		})
+	}
+}
+
+func TestEapAkaPrimeSetAttrAfterUnmarshal(t *testing.T) {
+	raw := []byte{
+		byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+		0x18, 0x01, 0x00, 0x02,
+		0x18, 0x01, 0x00, 0x01,
+		0x0b, 0x05, 0x00, 0x00,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	}
+	mac := bytes.Repeat([]byte{0xaa}, 16)
+
+	t.Run("AT_MAC updates raw bytes in place", func(t *testing.T) {
+		var m EapAkaPrime
+		require.NoError(t, m.Unmarshal(raw))
+		require.NoError(t, m.SetAttr(AT_MAC, mac))
+
+		out, err := m.Marshal()
+		require.NoError(t, err)
+		expected := append(append([]byte{}, raw[:16]...), mac...)
+		require.Equal(t, expected, out)
+		// The caller's buffer must not be modified
+		require.Equal(t, make([]byte, 16), raw[16:])
+	})
+
+	t.Run("Other attribute falls back to re-marshal", func(t *testing.T) {
+		var m EapAkaPrime
+		require.NoError(t, m.Unmarshal(raw))
+		require.NoError(t, m.SetAttr(AT_KDF, []byte{0x00, 0x03}))
+
+		out, err := m.Marshal()
+		require.NoError(t, err)
+		require.Equal(t, []byte{
+			byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+			0x18, 0x01, 0x00, 0x03,
+			0x0b, 0x05, 0x00, 0x00,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		}, out)
+	})
+}

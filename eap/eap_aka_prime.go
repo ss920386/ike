@@ -1,7 +1,6 @@
 package eap
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -88,6 +87,13 @@ type EapAkaPrime struct {
 	reserved       uint16
 	attributes     map[EapAkaPrimeAttrType]*EapAkaPrimeAttr
 	attributeOrder []EapAkaPrimeAttrType
+
+	// raw holds the bytes given to Unmarshal, so Marshal can reproduce the
+	// received message exactly (required for AT_MAC verification) even when
+	// it has duplicate or unrecognized attributes that the map cannot keep.
+	// It is dropped once an attribute other than AT_MAC is set.
+	raw          []byte
+	rawMACOffset int // offset of the AT_MAC value in raw, -1 if absent
 }
 
 func NewEapAkaPrime(subType EapAkaSubtype) *EapAkaPrime {
@@ -113,6 +119,14 @@ func (eapAkaPrime *EapAkaPrime) SetAttr(attrType EapAkaPrimeAttrType, value []by
 		return errors.Wrapf(err, "EAP-AKA' SetAttr failed")
 	}
 
+	if eapAkaPrime.raw != nil {
+		if attr.attrType == AT_MAC && eapAkaPrime.rawMACOffset >= 0 {
+			copy(eapAkaPrime.raw[eapAkaPrime.rawMACOffset:], attr.value)
+		} else {
+			eapAkaPrime.raw = nil
+		}
+	}
+
 	if _, exists := eapAkaPrime.attributes[attr.attrType]; !exists && eapAkaPrime.attributeOrder != nil {
 		eapAkaPrime.attributeOrder = append(eapAkaPrime.attributeOrder, attr.attrType)
 	}
@@ -134,6 +148,12 @@ func (eapAkaPrime *EapAkaPrime) GetAttr(attrType EapAkaPrimeAttrType) (EapAkaPri
 }
 
 func (eapAkaPrime *EapAkaPrime) Marshal() ([]byte, error) {
+	if eapAkaPrime.raw != nil {
+		out := make([]byte, len(eapAkaPrime.raw))
+		copy(out, eapAkaPrime.raw)
+		return out, nil
+	}
+
 	buffer := new(bytes.Buffer)
 
 	err := binary.Write(buffer, binary.BigEndian, EapTypeAkaPrime)
@@ -176,9 +196,8 @@ func (eapAkaPrime *EapAkaPrime) Marshal() ([]byte, error) {
 			return nil, errors.Wrapf(err, "EAP-AKA' Marshal(): write attribute/value failed")
 		}
 
-		// Unmarshal strips the zero padding of AT_KDF_INPUT/AT_RES from value,
-		// so pad up to the declared length to reproduce the received bytes
-		// (required for AT_MAC verification).
+		// AT_KDF_INPUT/AT_RES values are stored without their zero padding,
+		// so pad up to the declared length.
 		writtenLen := EapAkaAttrTypeLen + EapAkaAttrLengthLen + len(attr.value)
 		if attr.attrType != AT_AUTS {
 			writtenLen += EapAkaAttrReservedLen
@@ -198,7 +217,7 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 	if len(rawData) < 4 {
 		return errors.New("EAP-AKA' Unmarshal(): no sufficient bytes to decode the EAP-AKA' type")
 	}
-	bufReader := bufio.NewReader(bytes.NewReader(rawData))
+	bufReader := bytes.NewReader(rawData)
 
 	code, err := bufReader.ReadByte()
 	if err != nil {
@@ -227,10 +246,14 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 
 	eapAkaPrime.attributes = map[EapAkaPrimeAttrType]*EapAkaPrimeAttr{}
 	eapAkaPrime.attributeOrder = make([]EapAkaPrimeAttrType, 0)
+	eapAkaPrime.raw = nil
+	eapAkaPrime.rawMACOffset = -1
+	macOffset := -1
 
 	for {
 		attr := new(EapAkaPrimeAttr)
 		var attrType uint8
+		attrStart := int(bufReader.Size()) - bufReader.Len()
 
 		// Read EAP-AKA' attribute type
 		attrType, err = bufReader.ReadByte()
@@ -362,9 +385,15 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 			}
 
 			valBitsLen := binary.BigEndian.Uint16(reserved)
+			if valBitsLen < 32 || valBitsLen > 128 {
+				return errors.Errorf("EAP-AKA' Unmarshal(): %s needs between 32 and 128 bits, but got %d bits",
+					attr.attrType, valBitsLen,
+				)
+			}
 			attr.reserved = valBitsLen
 
-			valBytesLen := valBitsLen / 8
+			// Round up: the unused trailing bits of the last byte are zero padding
+			valBytesLen := (valBitsLen + 7) / 8
 			// Widen before multiplying: attr.length*4 overflows uint8 once length >= 64
 			totalLen := uint16(attr.length) * 4
 			headerLen := uint16(EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen)
@@ -413,34 +442,6 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 			}
 			attr.reserved = binary.BigEndian.Uint16(reserved)
 			attr.value = nil
-		case AT_CHECKCODE:
-			reserved := make([]byte, EapAkaAttrReservedLen)
-			n, err = io.ReadFull(bufReader, reserved)
-			if n != EapAkaAttrReservedLen {
-				return errors.Errorf("EAP-AKA' Unmarshal(): incomplete reserved bytes for %s", attr.attrType)
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return errors.Wrapf(err, "EAP-AKA' Unmarshal(): read %s attribute/reserved failed", attr.attrType)
-			}
-
-			valLen := 4*attr.length - EapAkaAttrTypeLen - EapAkaAttrLengthLen - EapAkaAttrReservedLen
-			attr.value = make([]byte, valLen)
-			n, err = io.ReadFull(bufReader, attr.value)
-			if n != int(valLen) {
-				return errors.Errorf("EAP-AKA' Unmarshal(): %s attribute value length mismatch, "+
-					"expect %d bytes but got %d bytes",
-					attr.attrType, valLen, n,
-				)
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return errors.Wrapf(err, "EAP-AKA' Unmarshal(): read %s attribute/value failed", attr.attrType)
-			}
 		case AT_NOTIFICATION:
 			// 2 bytes reserved, no value
 			reserved := make([]byte, EapAkaAttrReservedLen)
@@ -475,6 +476,50 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 				}
 				return errors.Wrapf(err, "EAP-AKA' Unmarshal(): read %s attribute/value failed", attr.attrType)
 			}
+		default:
+			// AT_CHECKCODE and attributes without dedicated handling (e.g.
+			// AT_IDENTITY, or skippable ones such as AT_RESULT_IND): 2 bytes
+			// reserved followed by the value, kept as-is including any padding.
+			reserved := make([]byte, EapAkaAttrReservedLen)
+			n, err = io.ReadFull(bufReader, reserved)
+			if n != EapAkaAttrReservedLen {
+				return errors.Errorf("EAP-AKA' Unmarshal(): incomplete reserved bytes for %s", attr.attrType)
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return errors.Wrapf(err, "EAP-AKA' Unmarshal(): read %s attribute/reserved failed", attr.attrType)
+			}
+			attr.reserved = binary.BigEndian.Uint16(reserved)
+
+			totalLen := int(attr.length) * 4
+			headerLen := EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen
+			if headerLen > totalLen {
+				return errors.Errorf("EAP-AKA' Unmarshal(): %s header length %d exceeds attribute length %d",
+					attr.attrType, headerLen, totalLen,
+				)
+			}
+			valLen := totalLen - headerLen
+
+			attr.value = make([]byte, valLen)
+			n, err = io.ReadFull(bufReader, attr.value)
+			if n != valLen {
+				return errors.Errorf("EAP-AKA' Unmarshal(): %s attribute value length mismatch, "+
+					"expect %d bytes but got %d bytes",
+					attr.attrType, valLen, n,
+				)
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return errors.Wrapf(err, "EAP-AKA' Unmarshal(): read %s attribute/value failed", attr.attrType)
+			}
+		}
+
+		if attr.attrType == AT_MAC {
+			macOffset = attrStart + EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen
 		}
 
 		// Set attribute
@@ -483,6 +528,10 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 		}
 		eapAkaPrime.attributes[attr.attrType] = attr
 	}
+
+	eapAkaPrime.raw = make([]byte, len(rawData))
+	copy(eapAkaPrime.raw, rawData)
+	eapAkaPrime.rawMACOffset = macOffset
 
 	return nil
 }
@@ -626,13 +675,15 @@ func (attr *EapAkaPrimeAttr) setAttr(attrType EapAkaPrimeAttrType, value []byte)
 		if calcTotalLen < 0 || calcTotalLen > math.MaxUint8 {
 			return errors.Errorf("%s network name too long: %d bytes", attrType, valBytesLen)
 		}
+		// Unreachable given the check above; kept for gosec G115
 		if valBytesLen < 0 || valBytesLen > math.MaxUint16 {
 			return errors.Errorf("eap aka prime attr bytes length overflow")
 		}
 		attr.reserved = uint16(valBytesLen) // The unit of reserved is byte
 		attr.length = uint8(calcTotalLen)
 
-		attr.value = make([]byte, valBytesLen+paddingBytes)
+		// Padding is added by Marshal
+		attr.value = make([]byte, valBytesLen)
 		copy(attr.value, value)
 	case AT_RES:
 		// RFC 4187:
@@ -677,9 +728,8 @@ func (attr *EapAkaPrimeAttr) setAttr(attrType EapAkaPrimeAttrType, value []byte)
 		}
 		attr.length = uint8(calcTotalLen)
 
-		// Create value slice with padding
-		paddedLen := valBytesLen + paddingBytes
-		attr.value = make([]byte, paddedLen)
+		// Padding is added by Marshal
+		attr.value = make([]byte, valBytesLen)
 		copy(attr.value, value)
 	case AT_KDF:
 		// RFC 5448:
