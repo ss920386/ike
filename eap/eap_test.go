@@ -1,6 +1,9 @@
 package eap_test
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
@@ -364,4 +367,25 @@ func TestEapAkaMacPreservesReceivedAttributeOrder(t *testing.T) {
 	mac, err := eap.CalcEapAkaPrimeAtMAC(key)
 	require.NoError(t, err)
 	require.Equal(t, "d5300e0989ee0bbd17d642b1f4abeeb6", hex.EncodeToString(mac))
+}
+
+func TestEapAkaMacKdfInputPadding(t *testing.T) {
+	// AT_KDF_INPUT with an 11-byte name carries 1 padding byte, which must be
+	// part of the MAC input.
+	key := bytes.Repeat([]byte{0x11}, 32)
+	packet := []byte{
+		byte(eap_message.EapCodeRequest), 1, 0, 44,
+		byte(eap_message.EapTypeAkaPrime), byte(eap_message.SubtypeAkaChallenge), 0, 0,
+		0x17, 0x04, 0x00, 0x0b, 'f', 'r', 'e', 'e', '5', 'g', 'c', '.', 'o', 'r', 'g', 0x00,
+		0x0b, 0x05, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	}
+	h := hmac.New(sha256.New, key)
+	h.Write(packet)
+
+	var eap eap_message.EAP
+	require.NoError(t, eap.Unmarshal(packet))
+
+	mac, err := eap.CalcEapAkaPrimeAtMAC(key)
+	require.NoError(t, err)
+	require.Equal(t, h.Sum(nil)[:16], mac)
 }

@@ -175,6 +175,17 @@ func (eapAkaPrime *EapAkaPrime) Marshal() ([]byte, error) {
 		if err != nil {
 			return nil, errors.Wrapf(err, "EAP-AKA' Marshal(): write attribute/value failed")
 		}
+
+		// Unmarshal strips the zero padding of AT_KDF_INPUT/AT_RES from value,
+		// so pad up to the declared length to reproduce the received bytes
+		// (required for AT_MAC verification).
+		writtenLen := EapAkaAttrTypeLen + EapAkaAttrLengthLen + len(attr.value)
+		if attr.attrType != AT_AUTS {
+			writtenLen += EapAkaAttrReservedLen
+		}
+		if paddingLen := int(attr.length)*4 - writtenLen; paddingLen > 0 {
+			buffer.Write(make([]byte, paddingLen))
+		}
 	}
 
 	return buffer.Bytes(), nil

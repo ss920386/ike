@@ -706,3 +706,36 @@ func TestEapAkaPrimeUnmarshalValueLengthExceedsAttr(t *testing.T) {
 		})
 	}
 }
+
+func TestEapAkaPrimePaddingRoundTrip(t *testing.T) {
+	testCases := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "AT_KDF_INPUT 11-byte name",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaIdentity), 0x00, 0x00,
+				0x17, 0x04, 0x00, 0x0b, 'f', 'r', 'e', 'e', '5', 'g', 'c', '.', 'o', 'r', 'g', 0x00,
+				0x18, 0x01, 0x00, 0x01,
+			},
+		},
+		{
+			name: "AT_RES 40 bits",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x03, 0x03, 0x00, 0x28, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0x00,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m EapAkaPrime
+			require.NoError(t, m.Unmarshal(tc.raw))
+			out, err := m.Marshal()
+			require.NoError(t, err)
+			require.Equal(t, tc.raw, out)
+		})
+	}
+}
