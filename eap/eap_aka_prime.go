@@ -609,11 +609,14 @@ func (attr *EapAkaPrimeAttr) setAttr(attrType EapAkaPrimeAttrType, value []byte)
 		totalLen := EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen + valBytesLen
 		paddingBytes := (4 - (totalLen % 4)) % 4
 
-		// The 1-byte Length field caps the attribute at 255*4 bytes, which also
-		// keeps valBytesLen within uint16.
+		// The 1-byte Length field caps the attribute at 255*4 bytes, so the
+		// network name can be at most 255*4 - 4 = 1016 bytes.
 		calcTotalLen := (totalLen + paddingBytes) / 4
-		if calcTotalLen > math.MaxUint8 {
+		if calcTotalLen < 0 || calcTotalLen > math.MaxUint8 {
 			return errors.Errorf("%s network name too long: %d bytes", attrType, valBytesLen)
+		}
+		if valBytesLen < 0 || valBytesLen > math.MaxUint16 {
+			return errors.Errorf("eap aka prime attr bytes length overflow")
 		}
 		attr.reserved = uint16(valBytesLen) // The unit of reserved is byte
 		attr.length = uint8(calcTotalLen)
