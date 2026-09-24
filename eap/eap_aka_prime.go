@@ -302,8 +302,15 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 			valBytesLen := binary.BigEndian.Uint16(reserved)
 			attr.reserved = valBytesLen
 
-			totalLen := uint16(attr.length * 4)
-			paddingLen := totalLen - valBytesLen - EapAkaAttrTypeLen - EapAkaAttrLengthLen - EapAkaAttrReservedLen
+			// Widen before multiplying: attr.length*4 overflows uint8 once length >= 64
+			totalLen := uint16(attr.length) * 4
+			headerLen := uint16(EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen)
+			if int(valBytesLen)+int(headerLen) > int(totalLen) {
+				return errors.Errorf("EAP-AKA' Unmarshal(): %s value length %d exceeds attribute length %d",
+					attr.attrType, valBytesLen, totalLen,
+				)
+			}
+			paddingLen := totalLen - headerLen - valBytesLen
 
 			attr.value = make([]byte, valBytesLen)
 			n, err = io.ReadFull(bufReader, attr.value)
@@ -347,8 +354,15 @@ func (eapAkaPrime *EapAkaPrime) Unmarshal(rawData []byte) error {
 			attr.reserved = valBitsLen
 
 			valBytesLen := valBitsLen / 8
-			totalLen := uint16(attr.length * 4)
-			paddingLen := totalLen - valBytesLen - EapAkaAttrTypeLen - EapAkaAttrLengthLen - EapAkaAttrReservedLen
+			// Widen before multiplying: attr.length*4 overflows uint8 once length >= 64
+			totalLen := uint16(attr.length) * 4
+			headerLen := uint16(EapAkaAttrTypeLen + EapAkaAttrLengthLen + EapAkaAttrReservedLen)
+			if int(valBytesLen)+int(headerLen) > int(totalLen) {
+				return errors.Errorf("EAP-AKA' Unmarshal(): %s value length %d exceeds attribute length %d",
+					attr.attrType, valBytesLen, totalLen,
+				)
+			}
+			paddingLen := totalLen - headerLen - valBytesLen
 
 			attr.value = make([]byte, valBytesLen)
 			n, err = io.ReadFull(bufReader, attr.value)

@@ -1,6 +1,7 @@
 package eap
 
 import (
+	"bytes"
 	"encoding/hex"
 	"testing"
 
@@ -654,6 +655,54 @@ func TestEapAkaPrimeUnmarshal(t *testing.T) {
 				_, exists := tc.expectedAttrs[attr.GetAttrType()]
 				require.True(t, exists, "Unexpected attribute type: %d", attr.GetAttrType())
 			}
+		})
+	}
+}
+
+func TestEapAkaPrimeKdfInputLongNameRoundTrip(t *testing.T) {
+	// attr.length >= 64 (name >= 249 bytes) used to overflow uint8 in Unmarshal
+	for _, n := range []int{248, 249, 300, 1016} {
+		name := bytes.Repeat([]byte{'a'}, n)
+		m := NewEapAkaPrime(SubtypeAkaChallenge)
+		require.NoError(t, m.SetAttr(AT_KDF_INPUT, name))
+		raw, err := m.Marshal()
+		require.NoError(t, err)
+
+		var got EapAkaPrime
+		require.NoError(t, got.Unmarshal(raw), "n=%d", n)
+		attr, err := got.GetAttr(AT_KDF_INPUT)
+		require.NoError(t, err)
+		require.Equal(t, name, attr.GetValue(), "n=%d", n)
+	}
+}
+
+func TestEapAkaPrimeUnmarshalValueLengthExceedsAttr(t *testing.T) {
+	testCases := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "AT_KDF_INPUT",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x17, 0x02, 0x00, 0x05, // length=2 (8 bytes) but claims 5-byte name
+				'a', 'b', 'c', 'd',
+			},
+		},
+		{
+			name: "AT_RES",
+			raw: []byte{
+				byte(EapTypeAkaPrime), byte(SubtypeAkaChallenge), 0x00, 0x00,
+				0x03, 0x02, 0x00, 0x40, // length=2 (8 bytes) but claims 64-bit RES
+				0x01, 0x02, 0x03, 0x04,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got EapAkaPrime
+			require.ErrorContains(t, got.Unmarshal(tc.raw), "exceeds attribute length")
 		})
 	}
 }
